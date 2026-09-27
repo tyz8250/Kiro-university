@@ -1,0 +1,253 @@
+# Implementation Plan: Network Fault Observation System
+
+## Overview
+
+AWS上でTerraform + EC2 + Docker + Goを組み合わせたネットワーク障害観測システムを構築する。実装は以下の順序で進める：Steering設定 → AWS Docs MCP設定 → Terraformインフラ → Go HTTPサーバー → プロパティテスト → Docker設定 → 観測スクリプト → Kiro Power設定 → Kiroエージェント/Hook → 実験結果テンプレート。
+
+設計書（design.md）はGoを使用しており、プロパティテストには `pgregory.net/rapid` を使用する。
+
+---
+
+## Tasks
+
+- [ ] 1. Steering ファイルの作成
+  - [ ] 1.1 `.kiro/steering/network-fault-observation.md` を作成する
+    - フロントマターに `inclusion: auto` を付与し、関連ファイル操作時に自動ロードされるようにする
+    - 以下のセクションを記述する：
+      - プロジェクト概要（ネットワーク障害観測実験システムの目的と実験対象 Experiment 1）
+      - 技術スタック（Terraform / EC2 Amazon Linux 2 / Docker / Go 1.22）
+      - 実験フロー：Baseline → Break → Observe → Restore → Record
+      - ディレクトリ構成（`infra/`, `app/`, `scripts/`, `results/`, `.kiro/`）
+      - Trace ID 仕様（UUID v4 形式、パターン `[A-Za-z0-9\-_]{1,64}`、HTTPヘッダー `X-Trace-ID` で伝搬）
+    - _Requirements: 全体_
+
+- [ ] 2. AWS Documentation MCP Server の設定と接続確認
+  - [ ] 2.1 `.kiro/settings/mcp.json` に `aws-docs` MCPサーバーを追加する
+    - `uvx awslabs.aws-documentation-mcp-server@latest` を使用する設定を追加する
+    - 既存の `mcp.json` が存在する場合は既存設定を壊さないようにマージする
+    - _Requirements: 10.4_
+
+  - [ ] 2.2 MCPサーバーへのサンプル呼び出しで接続を確認する
+    - `aws-docs` MCPサーバーを通じて Route Table / Internet Gateway に関するドキュメントセクションを取得し、接続が正常に機能することを確認する
+    - _Requirements: 10.4_
+
+- [ ] 3. Terraformインフラの構築
+  - [ ] 3.1 Terraformファイル群を作成する（main.tf / variables.tf / outputs.tf）
+    - `infra/` ディレクトリを作成し、`main.tf` に VPC、Public Subnet、IGW、Route Table、`aws_route.default`（独立リソース）、Route Table Association、Security Group（TCP 22/8080 inbound）、EC2インスタンスを定義する
+    - `variables.tf` に `region`、`ami_id`、`instance_type`、`key_name` を定義する
+    - `outputs.tf` に `ec2_public_ip` と `instance_id` を定義する
+    - `aws_route` を `aws_route_table` の `route` ブロックではなく独立リソースとして定義すること（Experiment 1 の障害注入で1行コメントアウトするだけで済むように）
+    - _Requirements: 1.1, 1.2, 1.3, 1.4, 1.5_
+
+  - [ ] 3.2 `.gitignore` と `terraform.tfvars.example` を作成する
+    - `infra/.gitignore` で `*.tfstate*`、`*.tfvars`、`.terraform/` を除外する
+    - `terraform.tfvars.example` に `region`、`ami_id`、`instance_type`、`key_name` のサンプル値を記述する
+    - _Requirements: 1.5_
+
+- [ ] 4. Goモジュール初期化とコアデータモデルの実装
+  - [ ] 4.1 Goモジュールを初期化し、TraceIDの型・バリデーション・生成を実装する
+    - `app/` ディレクトリで `go mod init` を実行し、`pgregory.net/rapid` を依存追加する
+    - `app/trace.go` に `TraceID` 型、`TraceIDMaxLen = 64`（65文字以上はすべて invalid）、`TraceIDPattern = ^[A-Za-z0-9\-_]{1,64}$` 定数を定義する
+    - `TraceID.Validate() bool` を実装する（空文字・65文字以上・`[A-Za-z0-9\-_]` 以外の文字を含むケースはすべて false）
+    - `NewTraceID() TraceID` を実装する（UUID v4ベース）
+    - _Requirements: 2.3, 3.4, 3.5_
+
+  - [ ] 4.2 構造化ログ（LogEntry）を実装する
+    - `app/logger.go` に `LogEntry` 構造体（timestamp / trace_id / method / path / status / duration_ms）を実装する
+    - JSON形式で標準出力に書き出す `WriteLog(w io.Writer, e LogEntry)` 関数を実装する
+    - _Requirements: 2.4, 3.2_
+
+- [ ] 5. Go HTTPサーバー本体の実装
+  - [ ] 5.1 Trace IDミドルウェアと `/health` ハンドラーを実装する
+    - `app/handler.go` に Trace IDミドルウェアを実装する：ヘッダー `X-Trace-ID` があればバリデーション、なければ `NewTraceID()` で自動生成
+    - バリデーション失敗時は HTTP 400 と `{"error": "..."}` JSON bodyを返す（空文字・65文字以上・`[A-Za-z0-9\-_]` 以外の文字を含む3ケースで異なるメッセージ）
+    - `GET /health` ハンドラーを実装し、`{"status":"ok","trace_id":"<id>"}` を返す
+    - レスポンスヘッダーに `X-Trace-ID` を設定する
+    - _Requirements: 2.1, 2.2, 2.3, 3.1, 3.5_
+
+  - [ ] 5.2 `main.go` でサーバーを組み立てて起動する
+    - `app/main.go` でルーターにミドルウェアとハンドラーを登録し、`:8080` でリッスンする
+    - 起動時にポート番号をログ出力する
+    - _Requirements: 2.1, 2.5_
+
+- [ ] 6. プロパティベーステストとユニットテストの実装
+  - [ ] 6.1 TraceIDバリデーションのユニットテストを実装する
+    - `app/trace_test.go` に例ベーステストを記述する：`TestHealthEndpointReturns200`、`TestEmptyTraceIDReturns400`、`TestLogEntryContainsRequiredFields`
+    - _Requirements: 2.1, 3.5_
+
+  - [ ] 6.2 Property 1 のプロパティテストを実装する（Trace IDラウンドトリップ）
+    - **Property 1: Trace ID ラウンドトリップ**
+    - `app/main_test.go` に `TestTraceIDRoundTrip` を `pgregory.net/rapid` で実装する
+    - 生成戦略: 長さ1〜64のランダム文字列（`[A-Za-z0-9\-_]`）を生成し、`X-Trace-ID` ヘッダーでリクエスト送信、レスポンスヘッダーの同一性を検証する（最低100イテレーション）
+    - タグ: `Feature: network-fault-observation, Property 1: Trace ID ラウンドトリップ`
+    - **Validates: Requirements 3.1, 3.4**
+
+  - [ ]* 6.3 Property 2 のプロパティテストを実装する（不正Trace IDの拒否）
+    - **Property 2: 不正 Trace ID の拒否**
+    - `app/main_test.go` に `TestInvalidTraceIDRejected` を実装する
+    - 生成戦略: 65文字以上または `[A-Za-z0-9\-_]` 以外の文字を含む文字列を生成し（有効範囲 `[A-Za-z0-9\-_]{1,64}` 外）、HTTP 400が返ることを検証する
+    - タグ: `Feature: network-fault-observation, Property 2: 不正 Trace ID の拒否`
+    - **Validates: Requirements 3.5**
+
+  - [ ]* 6.4 Property 3 のプロパティテストを実装する（全リクエストに対するログ記録）
+    - **Property 3: 全リクエストに対するログ記録**
+    - `app/main_test.go` に `TestAllRequestsLogged` を実装する
+    - 生成戦略: 任意のメソッド・パスの組み合わせを生成し、ログ出力にtrace_id・method・path・statusが含まれることを検証する
+    - タグ: `Feature: network-fault-observation, Property 3: 全リクエストに対するログ記録`
+    - **Validates: Requirements 2.4, 3.2**
+
+  - [ ]* 6.5 Property 4 のプロパティテストを実装する（空Trace IDのときの自動生成）
+    - **Property 4: 空 Trace ID のときの自動生成**
+    - `app/main_test.go` に `TestMissingTraceIDAutoGenerated` を実装する
+    - 生成戦略: `X-Trace-ID` ヘッダーなしリクエストをランダム回数送信し、レスポンスヘッダーに有効なTrace IDが含まれることを検証する
+    - タグ: `Feature: network-fault-observation, Property 4: 空 Trace ID のときの自動生成`
+    - **Validates: Requirements 2.3**
+
+- [ ] 7. Checkpoint — Goテストをすべてパスさせる
+  - `cd app && go test ./...` を実行し、全テストがパスすることを確認する。問題があればユーザーに確認する。
+
+- [ ] 8. Dockerfileの作成
+  - [ ] 8.1 マルチステージDockerfileを作成する
+    - `app/Dockerfile` にステージ1（`golang:1.22-alpine` でビルド）・ステージ2（`alpine:3.19` で実行バイナリのみコピー）を記述する
+    - コンテナはポート8080をEXPOSEする
+    - 非rootユーザーでバイナリを実行する
+    - _Requirements: 2.5_
+
+- [ ] 9. Baseline / Observation スクリプトの実装（SSH不可対応フロー）
+  - [ ] 9.1 `baseline.sh` を実装する
+    - `scripts/baseline.sh` を作成する
+    - 引数として `EC2_PUBLIC_IP` を受け取る
+    - UUID v4形式のTrace IDを生成し、Mac curlリクエスト・EC2 tcpdump（20パケット）・`docker ps`・Host curl・Go Serverログの5観測点を記録する
+    - tcpdump の記録は **タイムスタンプ・送信元IP・宛先ポート8080** を含む形式で保存する（Trace IDはL4レベルでは不可視のため、相関はタイムスタンプで行う）
+    - 結果を `results/baseline.json` に `ExperimentRecord` 形式（phase: "baseline"）で保存する
+    - EC2未到達時は `exit 1` する
+    - _Requirements: 4.1, 4.2, 4.3, 4.4, 4.5, 4.6_
+
+  - [ ] 9.2 `pre-fault-monitor.sh` を実装する
+    - `scripts/pre-fault-monitor.sh` を作成する
+    - 引数として `EC2_PUBLIC_IP` と `EC2_KEY_PATH` を受け取る
+    - SSHでEC2に接続し、以下をバックグラウンドで起動して即切断する：
+      - `sudo tcpdump -i eth0 'tcp port 8080' -w /tmp/tcpdump.pcap`
+      - `while true; do curl -s -o /dev/null -w "%{time_local} %{http_code}\n" http://localhost:8080/health >> /tmp/health.log; sleep 5; done`
+      - `while true; do docker ps --format "{{.Names}} {{.Status}}" >> /tmp/docker.log; sleep 5; done`
+    - tcpdump・healthチェック・dockerチェックの各PIDを `/tmp/monitor.pid` に保存する
+    - _Requirements: 6.1, 6.2, 6.5_
+
+  - [ ] 9.3 `observe.sh` を実装する（Macからの curl タイムアウト確認のみ）
+    - `scripts/observe.sh` を作成する
+    - MacからEC2:8080へ curl を実行し、タイムアウト・接続エラーを記録する（SSH経由のEC2アクセスはここでは行わない）
+    - 結果を `results/fault.json` に `ExperimentRecord` 形式（phase: "fault"）で部分保存する
+    - _Requirements: 6.3_
+
+  - [ ] 9.4 `post-restore-collect.sh` を実装する
+    - `scripts/post-restore-collect.sh` を作成する
+    - 引数として `EC2_PUBLIC_IP` と `EC2_KEY_PATH` を受け取る
+    - SSHでEC2に接続し、`/tmp/monitor.pid` を読んでバックグラウンドプロセスを停止する
+    - `/tmp/tcpdump.pcap` と `/tmp/health.log` と `/tmp/docker.log` を `scp` で `results/` にダウンロードする
+    - 回収したログを `results/fault.json` の観測点エントリとして統合する
+    - _Requirements: 6.4, 6.5_
+
+  - [ ] 9.5 `restore_check.sh` を実装する
+    - `scripts/restore_check.sh` を作成する
+    - `terraform apply` 完了後30秒以内にHTTP 200を受信するまでポーリングし、成功/失敗を標準出力に報告する
+    - _Requirements: 7.2_
+
+  - [ ] 9.6 `compare.sh` を実装する
+    - `scripts/compare.sh` を作成する
+    - `results/baseline.json` と `results/fault.json` を読み込み、各観測点のsuccess値を横並びで比較したMarkdownレポートを `results/report.md` に書き出す
+    - `baseline.json` が存在しない場合は `exit 1` する
+    - _Requirements: 6.5, 8.1, 8.5_
+
+- [ ] 10. 実験結果レポートテンプレートの作成
+  - [ ] 10.1 `results/report-template.md` を作成する
+    - 仮説（Hypothesis_Document参照）vs 実際の観測結果のサイドバイサイド比較セクションを含む
+    - 観測点ごとの記録欄（Mac curl / EC2 tcpdump / Docker / Go_Server）を設ける
+    - 実験中に使用したTrace IDの記録欄を設ける
+    - 差異があった場合の「説明セクション」（AWS Route Table / IGW動作への参照付き）の雛形を含む
+    - タイムスタンプ記録欄（Baseline取得 / `pre-fault-monitor.sh` 起動 / Default Route削除 / observe.sh 実行 / Default Route復元 / `post-restore-collect.sh` 実行）を含む
+    - `docs/experiment-1-hypothesis.md` をリンク参照し、仮説テキスト自体は変更しない
+    - _Requirements: 8.1, 8.2, 8.3, 8.4, 8.5_
+
+- [ ] 11. failure-investigation Kiro Power の作成と設定
+  - [ ] 11.1 Power定義ファイル群を作成する
+    - `.kiro/powers/failure-investigation/` ディレクトリを作成する
+    - `.kiro/powers/failure-investigation/plugin.json` を作成する（Powerメタデータ・スキル一覧・MCP依存を定義）
+    - `.kiro/powers/failure-investigation/mcp.json` を作成する（`uvx awslabs.aws-documentation-mcp-server@latest` を使用する aws-docs MCPサーバー設定）
+    - `.kiro/powers/failure-investigation/skills/investigate-network-failure/SKILL.md` を作成する（障害調査スキル: Hypothesis → Observe → Evidence → Root Cause → Verify フロー）
+    - **Power = 再利用可能な専門能力のパッケージ。スキルと外部ツール（MCP）を束ねる。他のエージェントや将来の実験でも再利用可能**
+    - _Requirements: 10.1, 10.2, 10.4_
+
+  - [ ] 11.2 Power のインポートと発火確認を行う
+    - Kiro に `failure-investigation` Power をインポートする
+    - サンプル呼び出し（Route Table 削除シナリオの障害調査プロンプト）で Power が正常に発火することを確認する
+    - _Requirements: 10.1, 10.2_
+
+  - [ ]* 11.3 Power のパッケージ化手順を記述する
+    - Power を他の実験環境で再利用可能な形でパッケージ化するための手順書（`README.md`）を `.kiro/powers/failure-investigation/` に作成する
+    - _Requirements: 10.1_
+
+- [ ] 12. Incident Investigatorエージェントの定義
+  - [ ] 12.1 `.kiro/agents/incident-investigator.md` を作成する
+    - エージェントの役割を「failure-investigation Power を呼び出す調査担当」として明記する
+    - **Custom Agent = Powerを使う担当者。Powerを呼び出すオーケストレーターとして振る舞い、読み取り専用・禁止操作などの制約を持つ**
+    - `failure-investigation` Power の `investigate-network-failure` スキルを呼び出す旨を明記する
+    - PowerのMCPサーバー（AWS Documentation、Power経由）を通じてAWSドキュメントを参照する旨を記述する
+    - 収集する情報源を定義する：Terraform plan出力、`docker ps` / `docker logs`、`ss` / `ip route`、Go Serverログファイル
+    - 遮断境界候補のランクリスト生成ロジック（Route Table → Security Group → Docker port mapping → Go Server processの順で証拠と共に提示）を定義する
+    - **禁止操作**を明記する：`terraform apply` / `terraform destroy`、Docker stop / rm、ファイル書き込み一切
+    - _Requirements: 10.1, 10.2, 10.3, 10.4_
+
+- [ ] 13. Kiro Hook（自動検証）の設定
+  - [ ] 13.1 `.kiro/hooks/auto-validate.json` を作成する
+    - **注記:** 現行 Kiro の `PostTaskExec` トリガーはファイルパス matcher による絞り込みをサポートしていないため、`Stop`（Agent Stop）トリガーを使用する
+    - `Stop` トリガー発火時に以下をシェル条件分岐で実行する：
+      - `app/*.go` が存在する場合 → `cd app && go test ./...`
+      - `infra/*.tf` が存在する場合 → `cd infra && terraform fmt -check && terraform validate`
+    - どちらも失敗した場合は非ゼロ終了コードでエラー出力をサーフェスする
+    - _Requirements: 9.1, 9.2, 9.3, 9.4_
+
+- [ ] 14. Final Checkpoint — 全成果物の整合性確認
+  - `app/` のファイル構成が design.md の仕様と一致していることを確認する
+  - `infra/` の Terraform ファイルが `terraform validate` をパスすることを確認する（ローカルにTerraformがある場合）
+  - `scripts/` に6ファイル（baseline.sh / pre-fault-monitor.sh / observe.sh / post-restore-collect.sh / restore_check.sh / compare.sh）が揃っていることを確認する
+  - `.kiro/steering/network-fault-observation.md` が `inclusion: auto` フロントマターを含むことを確認する
+  - 問題があればユーザーに確認する。
+
+---
+
+## Notes
+
+- タスクに `*` が付いているものはオプション。MVP優先の場合はスキップ可能
+- 各タスクは specific requirements を参照しているため、実装時のトレーサビリティを確保する
+- Terraform state はローカルファイル（`infra/terraform.tfstate`）に保存し、`.gitignore` で除外する
+- Property テストは `pgregory.net/rapid` を使用し、最低100イテレーションで実行する
+- `aws_route.default` を独立リソースとして定義することで、障害注入は1行コメントアウトで済む
+- failure-investigation Power = 再利用可能な専門能力のパッケージ（スキル + MCP）。Incident Investigator Custom Agentはそれを呼び出す担当者（読み取り専用・禁止操作の制約を持つ）
+- タスク6.2（Property 1: Trace IDラウンドトリップ）は必須タスク（`*` なし）
+- 観測スクリプト群は SSH不可シナリオに対応した2フェーズ構成（pre-fault起動 → post-restore回収）
+- tcpdumpログと他ログの相関は**タイムスタンプ・送信元IP・宛先ポート**で行う（Trace IDはL4では不可視）
+- Trace IDの有効範囲: `[A-Za-z0-9\-_]{1,64}`（1〜64文字）。65文字以上は invalid
+- `Stop` トリガーの Hook はファイル存在チェックをシェルスクリプト内で行う（matcher フィールド不要）
+
+---
+
+## Task Dependency Graph
+
+```json
+{
+  "waves": [
+    { "id": 0, "tasks": ["1.1", "2.1", "3.1", "4.1"] },
+    { "id": 1, "tasks": ["2.2", "3.2", "4.2"] },
+    { "id": 2, "tasks": ["5.1"] },
+    { "id": 3, "tasks": ["5.2", "6.1"] },
+    { "id": 4, "tasks": ["6.2", "6.3", "6.4", "6.5"] },
+    { "id": 5, "tasks": ["8.1"] },
+    { "id": 6, "tasks": ["9.1", "9.2"] },
+    { "id": 7, "tasks": ["9.3", "9.4", "9.5"] },
+    { "id": 8, "tasks": ["9.6", "10.1"] },
+    { "id": 9, "tasks": ["11.1", "13.1"] },
+    { "id": 10, "tasks": ["11.2", "11.3"] },
+    { "id": 11, "tasks": ["12.1"] }
+  ]
+}
+```
