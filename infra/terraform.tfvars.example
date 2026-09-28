@@ -1,0 +1,5 @@
+region        = "ap-northeast-1"
+instance_type = "t3.micro"
+key_name      = "your-key-pair-name"
+# Replace with your current public IPv4 address followed by /32
+allowed_cidr  = "203.0.113.10/32"

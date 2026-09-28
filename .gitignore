@@ -18,3 +18,6 @@ crash.*.log
 
 # Terraform state lock
 .terraform.tfstate.lock.info
+
+# Go build output
+/app/network-fault-observation

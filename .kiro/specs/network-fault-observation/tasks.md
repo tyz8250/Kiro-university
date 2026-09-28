@@ -40,9 +40,10 @@ AWS上でTerraform + EC2 + Docker + Goを組み合わせたネットワーク障
     - _Requirements: 1.1, 1.2, 1.3, 1.4, 1.5_
 
   - [ ] 3.2 `.gitignore` と `terraform.tfvars.example` を作成する
-    - `infra/.gitignore` で `*.tfstate*`、`*.tfvars`、`.terraform/` を除外する
-    - `terraform.tfvars.example` に `region`、`ami_id`、`instance_type`、`key_name` のサンプル値を記述する
-    - _Requirements: 1.5_
+  - `infra/.gitignore` で `*.tfstate*`、`*.tfvars`、`.terraform/` を除外する
+  - `terraform.tfvars.example` に `region`、`instance_type`、`key_name`、`allowed_cidr` のサンプル値を記述する
+  - 実際のIPアドレスや秘密情報は記載しない
+  - _Requirements: 1.5_
 
 - [ ] 4. Goモジュール初期化とコアデータモデルの実装
   - [ ] 4.1 Goモジュールを初期化し、TraceIDの型・バリデーション・生成を実装する
