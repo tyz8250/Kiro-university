@@ -109,15 +109,16 @@ AWS上でTerraform + EC2 + Docker + Goを組み合わせたネットワーク障
 
 - [ ] 8. Dockerfileの作成
   - [ ] 8.1 マルチステージDockerfileを作成する
-    - `app/Dockerfile` にステージ1（`golang:1.22-alpine` でビルド）・ステージ2（`alpine:3.19` で実行バイナリのみコピー）を記述する
+    - `app/Dockerfile` にステージ1（`golang:1.23-alpine` でビルド）・ステージ2（`alpine:3.19` で実行バイナリのみコピー）を記述する
     - コンテナはポート8080をEXPOSEする
     - 非rootユーザーでバイナリを実行する
     - _Requirements: 2.5_
+    - Note: `pgregory.net/rapid v1.3.0` が Go 1.23 を要求するため、ビルドステージを Go 1.23 に合わせる
 
 - [ ] 9. Baseline / Observation スクリプトの実装（SSH不可対応フロー）
   - [ ] 9.1 `baseline.sh` を実装する
     - `scripts/baseline.sh` を作成する
-    - 引数として `EC2_PUBLIC_IP` を受け取る
+    - 引数として `EC2_PUBLIC_IP` と `EC2_KEY_PATH` を受け取る
     - UUID v4形式のTrace IDを生成し、Mac curlリクエスト・EC2 tcpdump（20パケット）・`docker ps`・Host curl・Go Serverログの5観測点を記録する
     - tcpdump の記録は **タイムスタンプ・送信元IP・宛先ポート8080** を含む形式で保存する（Trace IDはL4レベルでは不可視のため、相関はタイムスタンプで行う）
     - 結果を `results/baseline.json` に `ExperimentRecord` 形式（phase: "baseline"）で保存する
@@ -127,13 +128,15 @@ AWS上でTerraform + EC2 + Docker + Goを組み合わせたネットワーク障
   - [ ] 9.2 `pre-fault-monitor.sh` を実装する
     - `scripts/pre-fault-monitor.sh` を作成する
     - 引数として `EC2_PUBLIC_IP` と `EC2_KEY_PATH` を受け取る
-    - SSHでEC2に接続し、以下をバックグラウンドで起動して即切断する：
-      - `sudo tcpdump -i eth0 'tcp port 8080' -w /tmp/tcpdump.pcap`
-      - `while true; do curl -s -o /dev/null -w "%{time_local} %{http_code}\n" http://localhost:8080/health >> /tmp/health.log; sleep 5; done`
-      - `while true; do docker ps --format "{{.Names}} {{.Status}}" >> /tmp/docker.log; sleep 5; done`
+    - SSHでEC2に接続し、使用中のネットワークインターフェースを以下で取得する：
+      - `IFACE=$(ip route show default | awk '{print $5; exit}')`
+    - SSH切断後も継続するよう `nohup` 等を使用し、以下をバックグラウンドで起動する：
+      - `sudo tcpdump -i "$IFACE" 'tcp port 8080' -w /tmp/tcpdump.pcap`
+      - `while true; do printf '%s ' "$(date -Is)" >> /tmp/health.log; curl -s -o /dev/null -w "%{http_code}\n" http://localhost:8080/health >> /tmp/health.log; sleep 5; done`
+      - `while true; do printf '%s ' "$(date -Is)" >> /tmp/docker.log; docker ps --format "{{.Names}} {{.Status}}" >> /tmp/docker.log; sleep 5; done`
     - tcpdump・healthチェック・dockerチェックの各PIDを `/tmp/monitor.pid` に保存する
+    - 監視プロセスを起動したらSSH接続を終了する
     - _Requirements: 6.1, 6.2, 6.5_
-
   - [ ] 9.3 `observe.sh` を実装する（Macからの curl タイムアウト確認のみ）
     - `scripts/observe.sh` を作成する
     - MacからEC2:8080へ curl を実行し、タイムアウト・接続エラーを記録する（SSH経由のEC2アクセスはここでは行わない）

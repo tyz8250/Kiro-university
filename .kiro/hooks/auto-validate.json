@@ -1,0 +1,16 @@
+{
+  "version": "v1",
+  "hooks": [
+    {
+      "name": "auto-validate-go-and-terraform",
+      "description": "Validate Go tests and Terraform formatting and configuration when the agent stops.",
+      "trigger": "AgentStop",
+      "action": {
+        "type": "command",
+        "command": "status=0\n\nif find app -maxdepth 1 -type f -name '*.go' -print -quit 2>/dev/null | grep -q .; then\n  if ! (cd app && go test ./...); then\n    echo 'Go validation failed: cd app && go test ./...' >&2\n    status=1\n  fi\nelse\n  echo 'Go validation skipped: no app/*.go files found.'\nfi\n\nif find infra -maxdepth 1 -type f -name '*.tf' -print -quit 2>/dev/null | grep -q .; then\n  if ! (cd infra && terraform fmt -check); then\n    echo 'Terraform format validation failed: cd infra && terraform fmt -check' >&2\n    status=1\n  fi\n\n  if ! (cd infra && terraform validate); then\n    echo 'Terraform configuration validation failed: cd infra && terraform validate' >&2\n    status=1\n  fi\nelse\n  echo 'Terraform validation skipped: no infra/*.tf files found.'\nfi\n\nexit \"$status\""
+      },
+      "timeout": 300,
+      "enabled": true
+    }
+  ]
+}

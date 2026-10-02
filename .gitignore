@@ -21,3 +21,10 @@ crash.*.log
 
 # Go build output
 /app/network-fault-observation
+
+# Private keys
+*.pem
+*.key
+
+# Packet captures may contain client/network addresses
+*.pcap

@@ -175,7 +175,7 @@ flowchart TD
 **Dockerfile（マルチステージ）:**
 
 ```
-Stage 1: golang:1.22-alpine  → go build
+Stage 1: golang:1.23-alpine  → go build
 Stage 2: alpine:3.19         → 実行バイナリのみコピー
 ```
 
