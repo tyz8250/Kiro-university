@@ -28,3 +28,6 @@ crash.*.log
 
 # Packet captures may contain client/network addresses
 *.pcap
+
+# Generated demo assets
+demo/assets/

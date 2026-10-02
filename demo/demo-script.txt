@@ -1,0 +1,29 @@
+Network Fault Observation
+Target duration: 120 seconds
+
+00:00-00:12
+Network Fault Observation is an AWS, Docker, and Go experiment that asks one question: where does communication stop?
+
+00:12-00:27
+The request crosses six boundaries, from a Mac through the internet and an AWS VPC, into EC2, Docker, and the Go server. We test by hypothesis, break, observation, explanation, and restore.
+
+00:27-00:40
+Before the fault, all five observation points were healthy: external curl, packet capture, Docker, host curl, and Go server logs.
+
+00:40-00:55
+Experiment one removed only the default route from the public route table: zero dot zero dot zero dot zero slash zero to the Internet Gateway.
+
+00:55-01:07
+The external curl timed out. But packet capture showed five SYN packets reaching EC2, and ten SYN-ACK responses, including retransmissions. No final ACK returned.
+
+01:07-01:20
+Meanwhile, internal health stayed at twenty-two out of twenty-two HTTP 200 responses, and Docker stayed up for twenty-two out of twenty-two checks. The original hypothesis was only partially correct.
+
+01:20-01:32
+After restoring the route, HTTP 200 returned immediately, and Terraform reported no changes. The experiment ended in its original infrastructure state.
+
+01:32-01:52
+Kiro organized the work with Specs, Steering, property-based tests, a Power connected to AWS documentation, a read-only custom agent, an AgentStop validation hook, and project MCP settings.
+
+01:52-02:00
+A failed curl does not necessarily mean the application failed. Observe each boundary separately.

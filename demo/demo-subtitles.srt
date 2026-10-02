@@ -1,0 +1,41 @@
+1
+00:00:00,000 --> 00:00:12,000
+Network Fault Observation asks one question: where does communication stop?
+
+2
+00:00:12,000 --> 00:00:27,000
+Mac -> Internet -> AWS VPC -> EC2 -> Docker -> Go Server
+Hypothesis -> Break -> Observe -> Explain -> Restore
+
+3
+00:00:27,000 --> 00:00:40,000
+Baseline: all 5 of 5 observation points were healthy.
+
+4
+00:00:40,000 --> 00:00:55,000
+Experiment 1 removed only the default route:
+0.0.0.0/0 -> Internet Gateway
+
+5
+00:00:55,000 --> 00:01:07,000
+SYN: 5 reached EC2. SYN-ACK: 10 left EC2. Final ACK: 0.
+The TCP handshake did not complete.
+
+6
+00:01:07,000 --> 00:01:20,000
+Internal health: 22/22 HTTP 200. Docker: 22/22 Up.
+The original hypothesis was partially wrong.
+
+7
+00:01:20,000 --> 00:01:32,000
+After restore: HTTP 200. Terraform: No changes.
+
+8
+00:01:32,000 --> 00:01:52,000
+Kiro: Specs, Steering, Property-Based Testing, Power + AWS Docs MCP,
+Custom Agent, AgentStop Hook, and Settings.
+
+9
+00:01:52,000 --> 00:02:00,000
+A failed curl does not necessarily mean the application failed.
+Observe each boundary separately.
