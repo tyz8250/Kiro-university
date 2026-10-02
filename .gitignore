@@ -31,3 +31,9 @@ crash.*.log
 
 # Generated demo assets
 demo/assets/.DS_Store
+
+# macOS metadata
+.DS_Store
+
+# Generated demo assets
+demo/assets/
