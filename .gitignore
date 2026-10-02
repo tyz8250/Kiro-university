@@ -30,4 +30,4 @@ crash.*.log
 *.pcap
 
 # Generated demo assets
-demo/assets/
+demo/assets/.DS_Store
